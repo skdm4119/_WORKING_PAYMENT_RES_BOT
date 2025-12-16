@@ -587,7 +587,7 @@
 import os, re, time, asyncio, json
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import UserNotParticipant
+from pyrogram.errors import UserNotParticipant, FloodWait
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
 from utils.func import get_user_data_key, process_text_with_rules, is_premium_user, E
@@ -604,7 +604,6 @@ Z, P, UB, UC, emp = {}, {}, {}, {}, {}
 ACTIVE_USERS = {}
 ACTIVE_USERS_FILE = "active_users.json"
 
-# fixed directory file_name problems 
 def sanitize(filename):
     return re.sub(r'[<>:"/\\|?*\']', '_', filename).strip(" .")[:255]
 
@@ -666,7 +665,6 @@ async def upd_dlg(c):
         print(f'Failed to update dialogs: {e}')
         return False
 
-# fixed the old group of 2021-2022 extraction 
 async def get_msg(c, u, i, d, lt):
     try:
         if lt == 'public':
@@ -775,20 +773,49 @@ async def get_uclient(uid):
             return ubot if ubot else Y
     return Y
 
+# ==============================================================================
+# OPTIMIZED PROGRESS BAR (6 Seconds Interval)
+# ==============================================================================
 async def prog(c, t, C, h, m, st):
     global P
+    
+    # Get current time
+    now = time.time()
+    
+    # Calculate percentage
     p = c / t * 100
-    interval = 10 if t >= 100 * 1024 * 1024 else 20 if t >= 50 * 1024 * 1024 else 30 if t >= 10 * 1024 * 1024 else 50
-    step = int(p // interval) * interval
-    if m not in P or P[m] != step or p >= 100:
-        P[m] = step
-        c_mb = c / (1024 * 1024)
-        t_mb = t / (1024 * 1024)
-        bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
-        speed = c / (time.time() - st) / (1024 * 1024) if time.time() > st else 0
-        eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
-        await C.edit_message_text(h, m, f"__**Pyro Handler...**__\n\n{bar}\n\n⚡**__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n📊 **__Done__**: {p:.2f}%\n🚀 **__Speed__**: {speed:.2f} MB/s\n⏳ **__ETA__**: {eta}\n\n**__Powered by Team SPY__**")
-        if p >= 100: P.pop(m, None)
+    
+    # RATE LIMIT LOGIC:
+    # If the message ID is in P (we've updated it before)
+    # AND less than 6 seconds have passed since the last update
+    # AND the process is not yet finished (p < 100)
+    # THEN: Return immediately (Skip update to save API calls)
+    if m in P and (now - P[m]) < 6 and p < 100:
+        return
+
+    # Update the timestamp for this message ID
+    P[m] = now
+    
+    # Calculate stats
+    c_mb = c / (1024 * 1024)
+    t_mb = t / (1024 * 1024)
+    bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
+    speed = c / (now - st) / (1024 * 1024) if now > st else 0
+    eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
+    
+    try:
+        await C.edit_message_text(
+            h, m, 
+            f"__**Pyro Handler...**__\n\n{bar}\n\n⚡**__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n📊 **__Done__**: {p:.2f}%\n🚀 **__Speed__**: {speed:.2f} MB/s\n⏳ **__ETA__**: {eta}\n\n**__Powered by Team SPY__**"
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+    except Exception:
+        pass # Ignore other errors to keep download going
+    
+    # Cleanup when 100%
+    if p >= 100: 
+        P.pop(m, None)
 
 async def send_direct(c, m, tcid, ft=None, rtmid=None):
     try:
@@ -815,7 +842,7 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None):
         return False
 
 # ==============================================================================
-# FINAL FIXED PROCESS_MSG WITH STRICT EXTENSION PRESERVATION
+# OPTIMIZED PROCESS_MSG (REMOVED SPAMMY EDITS)
 # ==============================================================================
 async def process_msg(c, u, m, d, lt, uid, i):
     try:
@@ -841,15 +868,11 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 return 'Sent directly.'
             
             st = time.time()
+            # Initial message is required to establish p.id for progress updates
             p = await c.send_message(d, 'Downloading...')
 
-            # -------------------------------------------------------------------
-            # CRITICAL CHECK: IDENTIFY ORIGINAL EXTENSION
-            # -------------------------------------------------------------------
+            # --- EXTENSION DETECTION ---
             video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv'}
-            # Default to mp4 if unknown video, but try to fetch real ext
-            
-            original_ext = ""
             c_name = f"{time.time()}"
             is_real_video = False
 
@@ -857,96 +880,79 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 is_real_video = True
                 if m.video.file_name:
                     _, ext = os.path.splitext(m.video.file_name)
-                    original_ext = ext.lower() if ext else ".mp4"
+                    c_name = sanitize(f"{time.time()}{ext}")
                 else:
-                    original_ext = ".mp4"
-                c_name = sanitize(f"{time.time()}{original_ext}")
+                    c_name = sanitize(f"{time.time()}.mp4")
 
             elif m.document:
                 if m.document.file_name:
                     _, ext = os.path.splitext(m.document.file_name)
-                    original_ext = ext.lower() if ext else ""
-                
-                # Check if this document is actually a video file
-                if original_ext in video_extensions:
-                    is_real_video = True
-                
-                # Force the download name to have the ORIGINAL extension
-                if not original_ext:
-                    original_ext = ".bin" # Fallback
-                c_name = sanitize(f"{time.time()}{original_ext}")
+                    if ext.lower() in video_extensions:
+                        is_real_video = True
+                    c_name = sanitize(f"{time.time()}{ext}")
+                else:
+                    c_name = sanitize(f"{time.time()}.bin")
 
             elif m.audio:
                 if m.audio.file_name:
                     _, ext = os.path.splitext(m.audio.file_name)
-                    original_ext = ext.lower() if ext else ".mp3"
+                    c_name = sanitize(f"{time.time()}{ext}")
                 else:
-                    original_ext = ".mp3"
-                c_name = sanitize(f"{time.time()}{original_ext}")
+                    c_name = sanitize(f"{time.time()}.mp3")
 
             elif m.photo:
-                original_ext = ".jpg"
                 c_name = sanitize(f"{time.time()}.jpg")
-            
-            # -------------------------------------------------------------------
-
+    
+            # --- DOWNLOAD ---
             f = await u.download_media(m, file_name=c_name, progress=prog, progress_args=(c, d, p.id, st))
             
             if not f:
                 await c.edit_message_text(d, p.id, 'Failed.')
                 return 'Failed.'
             
-            # Disk Full Check
+            # --- 0KB / DISK CHECK ---
             if os.path.exists(f) and os.path.getsize(f) == 0:
                 os.remove(f)
-                await c.edit_message_text(d, p.id, 'Failed: Disk Full (0KB file).')
+                await c.edit_message_text(d, p.id, 'Failed: 0KB File.')
                 return 'Failed: Disk Full.'
 
-            await c.edit_message_text(d, p.id, 'Renaming...')
-            
-            # RENAME LOGIC: Pass original_ext to prevent forced mp4 conversion if needed
-            # NOTE: You may need to edit plugins/settings.py rename_file to actually respect this if it doesn't already.
-            # However, since we set c_name with correct extension, let's ensure rename_file doesn't break it.
-            
-            # If the user has Custom Rename, we apply it but KEEP the original extension
+            # REMOVED: await c.edit_message_text(d, p.id, 'Renaming...') <--- DELETED AS REQUESTED
+
             if (
                 (m.video and m.video.file_name) or
                 (m.audio and m.audio.file_name) or
                 (m.document and m.document.file_name)
             ):
-                 # We simply call rename_file. If rename_file is forcing mp4, we must rely on our logic below 
-                 # to treat it as a document if is_real_video is False.
-                 f = await rename_file(f, d, p)
-                 
-                 # SAFETY: If rename_file changed a .zip to .mp4, we detect it here? 
-                 # It's hard to revert rename_file without changing settings.py.
-                 # BUT, we can check the mime type or just trust is_real_video flag.
-
+                f = await rename_file(f, d, p)
+            
             fsize = os.path.getsize(f) / (1024 * 1024 * 1024)
             th = thumbnail(d)
             generated_thumb = None
 
+            # --- CLEANUP FUNCTION ---
+            async def cleanup():
+                if os.path.exists(f): os.remove(f)
+                if generated_thumb and os.path.exists(generated_thumb): os.remove(generated_thumb)
+                await c.delete_messages(d, p.id)
+
             if fsize > 2 and Y:
                 st = time.time()
-                await c.edit_message_text(d, p.id, 'File is larger than 2GB. Using alternative method...')
+                # REMOVED: await c.edit_message_text(d, p.id, 'File is larger...') <--- REDUCED SPAM
                 await upd_dlg(Y)
                 
-                dur, h, w = 0, 0, 0
-                
-                # ONLY run metadata/screenshot if it was originally a video
-                if is_real_video:
-                    try:
-                        mtd = await get_video_metadata(f)
-                        dur, h, w = mtd['duration'], mtd['width'], mtd['height']
-                        generated_thumb = await screenshot(f, dur, d)
-                        th = generated_thumb
-                    except Exception as e:
-                        print(f"Metadata error (safe skip): {e}")
-
                 try:
-                    # If NOT a real video (e.g. zip, pdf), force send as document
+                    dur, h, w = 0, 0, 0
+                    if is_real_video:
+                        try:
+                            mtd = await get_video_metadata(f)
+                            dur, h, w = mtd['duration'], mtd['width'], mtd['height']
+                            generated_thumb = await screenshot(f, dur, d)
+                            th = generated_thumb
+                        except Exception:
+                            pass
+
                     if not is_real_video:
-                        sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
+                         sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
                                                     reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
                     else:
                         send_funcs = {'video': Y.send_video, 'video_note': Y.send_video_note, 
@@ -954,7 +960,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                                     'photo': Y.send_photo, 'document': Y.send_document}
                         
                         for mtype, func in send_funcs.items():
-                            if f.endswith(tuple(video_extensions)) and is_real_video: mtype = 'video'
+                            if f.lower().endswith(tuple(video_extensions)): mtype = 'video'
                             if getattr(m, mtype, None):
                                 sent = await func(LOG_GROUP, f, thumb=th if mtype == 'video' else None, 
                                                 duration=dur if mtype == 'video' else None,
@@ -968,23 +974,20 @@ async def process_msg(c, u, m, d, lt, uid, i):
                                                         reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
                     
                     await c.copy_message(d, LOG_GROUP, sent.id)
-                finally:
-                    if os.path.exists(f): 
-                        os.remove(f)
-                    if generated_thumb and os.path.exists(generated_thumb): 
-                        os.remove(generated_thumb)
-                    await c.delete_messages(d, p.id)
+                except Exception as e:
+                    # Keep error message so user knows why it failed
+                    await c.edit_message_text(d, p.id, f'Error: {str(e)[:30]}')
+                    await cleanup()
+                    return 'Failed.'
                 
+                await cleanup()
                 return 'Done (Large file).'
             
-            await c.edit_message_text(d, p.id, 'Uploading...')
+            # REMOVED: await c.edit_message_text(d, p.id, 'Uploading...') <--- DELETED AS REQUESTED
             st = time.time()
 
             try:
                 uploaded = False
-                
-                # ONLY try to upload as video if it IS a video originally
-                # AND the file on disk still has a video extension
                 if is_real_video and (m.video or (m.document and os.path.splitext(f)[1].lower() in video_extensions)):
                     try:
                         mtd = await get_video_metadata(f)
@@ -997,8 +1000,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                                         progress=prog, progress_args=(c, d, p.id, st), 
                                         reply_to_message_id=rtmid)
                         uploaded = True
-                    except Exception as e:
-                        print(f"Failed to upload as video: {e}")
+                    except Exception:
                         uploaded = False
 
                 if not uploaded:
@@ -1019,26 +1021,16 @@ async def process_msg(c, u, m, d, lt, uid, i):
                                         progress=prog, progress_args=(c, d, p.id, st), 
                                         reply_to_message_id=rtmid)
                     else:
-                        # Fallback for ZIPs, PDFs, and everything else
                         await c.send_document(tcid, document=f, caption=ft if m.caption else None, 
                                             progress=prog, progress_args=(c, d, p.id, st), 
                                             reply_to_message_id=rtmid)
             except Exception as e:
-                await c.edit_message_text(d, p.id, f'Upload failed: {str(e)[:30]}')
-                if os.path.exists(f): 
-                    os.remove(f)
-                if generated_thumb and os.path.exists(generated_thumb): 
-                    os.remove(generated_thumb)
+                # Keep error message so user knows why it failed
+                await c.edit_message_text(d, p.id, f'Error: {str(e)[:30]}')
+                await cleanup()
                 return 'Failed.'
             
-            # CLEANUP
-            if os.path.exists(f): 
-                os.remove(f)
-            if generated_thumb and os.path.exists(generated_thumb): 
-                os.remove(generated_thumb)
-            
-            await c.delete_messages(d, p.id)
-            
+            await cleanup()
             return 'Done.'
             
         elif m.text:
@@ -1214,4 +1206,3 @@ async def text_handler(c, m):
         finally:
             await remove_active_batch(uid)
             Z.pop(uid, None)
-
