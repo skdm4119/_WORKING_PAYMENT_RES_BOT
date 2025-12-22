@@ -1249,7 +1249,6 @@
 
 
 
-
 # Copyright (c) 2025 devgagan : https://github.com/devgaganin.  
 # Licensed under the GNU General Public License v3.0.  
 # See LICENSE file in the repository root for full license text.
@@ -1329,7 +1328,6 @@ ACTIVE_USERS = load_active_users()
 
 async def upd_dlg(c):
     try:
-        # Increased limit to ensure cache is populated
         async for _ in c.get_dialogs(limit=5000): pass
         return True
     except Exception as e:
@@ -1348,25 +1346,26 @@ async def get_msg(c, u, i, d, lt):
                         emp[i] = True
                         print(f"Bot chat found successfully...")
                         return xm
-                    
-                if emp[i]:
+                
+                # FIXED: Changed emp[i] to emp.get(i, False) to avoid KeyError
+                if emp.get(i, False):
                     xm = await c.get_messages(i, d)
-                    print(f"fetched by {c.me.username}")
-                    emp[i] = getattr(xm, "empty", False)
-                    if emp[i]:
-                        print(f"Not fetched by {c.me.username}")
-                        try: await u.join_chat(i)
-                        except: pass
-                        xm = await u.get_messages((await u.get_chat(f"@{i}")).id, d)
-                    
-                    return xm                   
+                    if not getattr(xm, "empty", False):
+                        return xm
+                
+                try: await u.join_chat(i)
+                except: pass
+                
+                xm = await u.get_messages(i, d)
+                if getattr(xm, "empty", False):
+                    return None
+                return xm                   
             except Exception as e:
                 print(f'Error fetching public message: {e}')
                 return None
         else:
             if u:
                 try:
-                    # 1. STRICT ID HANDLING
                     chat_id = str(i)
                     if chat_id.startswith("-100"):
                         final_id = int(chat_id)
@@ -1375,7 +1374,6 @@ async def get_msg(c, u, i, d, lt):
                     else:
                         final_id = int(f"-100{chat_id}")
 
-                    # 2. ATTEMPT 1: Direct Fetch
                     try:
                         msg = await u.get_messages(final_id, d)
                         if msg and not getattr(msg, "empty", False):
@@ -1383,8 +1381,6 @@ async def get_msg(c, u, i, d, lt):
                     except Exception:
                         pass
                     
-                    # 3. ATTEMPT 2: Force Cache Refresh (Deep Scan)
-                    # Scanning 5000 dialogs to find the channel
                     try:
                         async for dialog in u.get_dialogs(limit=5000):
                             if dialog.chat.id == final_id:
@@ -1392,7 +1388,6 @@ async def get_msg(c, u, i, d, lt):
                     except Exception:
                         pass
                     
-                    # 4. ATTEMPT 3: Retry Fetch
                     try:
                         msg = await u.get_messages(final_id, d)
                         if msg and not getattr(msg, "empty", False):
@@ -1441,33 +1436,20 @@ async def get_uclient(uid):
             return ubot if ubot else Y
     return Y
 
-# ==============================================================================
-# PROGRESS BAR WITH VARIABLE INTERVALS & HEADER
-# ==============================================================================
 async def prog(c, t, C, h, m, st, ud_type):
     global P
     now = time.time()
     p = c / t * 100
-    
-    # --- INTERVAL LOGIC ---
-    # Downloading: 25 seconds
-    # Uploading: 6 seconds
     interval = 25 if ud_type == "Downloading" else 6
-
-    # Return if interval hasn't passed (and not finished)
     if m in P and (now - P[m]) < interval and p < 100:
         return
-
     P[m] = now
     c_mb = c / (1024 * 1024)
     t_mb = t / (1024 * 1024)
     bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
     speed = c / (now - st) / (1024 * 1024) if now > st else 0
     eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
-    
-    # --- HEADER ICON ---
     icon = "📥" if ud_type == "Downloading" else "📤"
-    
     try:
         await C.edit_message_text(
             h, m, 
@@ -1477,7 +1459,6 @@ async def prog(c, t, C, h, m, st, ud_type):
         await asyncio.sleep(e.value)
     except Exception:
         pass 
-    
     if p >= 100: P.pop(m, None)
 
 async def send_direct(c, m, tcid, ft=None, rtmid=None):
@@ -1504,9 +1485,6 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None):
         print(f'Direct send error: {e}')
         return False
 
-# ==============================================================================
-# PROCESS MSG WITH UD_TYPE FLAG
-# ==============================================================================
 async def process_msg(c, u, m, d, lt, uid, i):
     try:
         cfg_chat = await get_user_data_key(d, 'chat_id', None)
@@ -1526,6 +1504,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
             user_cap = await get_user_data_key(d, 'caption', '')
             ft = f'{proc_text}\n\n{user_cap}' if proc_text and user_cap else user_cap if user_cap else proc_text
             
+            # PUBLIC CLONING LOGIC
             if lt == 'public' and not emp.get(i, False):
                 await send_direct(c, m, tcid, ft, rtmid)
                 return 'Sent directly.'
@@ -1533,7 +1512,6 @@ async def process_msg(c, u, m, d, lt, uid, i):
             st = time.time()
             p = await c.send_message(d, 'Downloading...')
 
-            # --- EXTENSION DETECTION ---
             video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv'}
             is_real_video = False
             c_name = f"{time.time()}"
@@ -1562,25 +1540,22 @@ async def process_msg(c, u, m, d, lt, uid, i):
             elif m.photo:
                 c_name = sanitize(f"{time.time()}.jpg")
     
-            # --- DOWNLOAD (Pass 'Downloading' type) ---
             f = await u.download_media(
                 m, 
                 file_name=c_name, 
                 progress=prog, 
-                progress_args=(c, d, p.id, st, 'Downloading') # 25s update
+                progress_args=(c, d, p.id, st, 'Downloading') 
             )
             
             if not f:
                 await c.edit_message_text(d, p.id, 'Failed.')
                 return 'Failed.'
             
-            # --- 0KB / DISK CHECK ---
             if os.path.exists(f) and os.path.getsize(f) == 0:
                 os.remove(f)
                 await c.edit_message_text(d, p.id, 'Failed: 0KB File.')
                 return 'Failed: Disk Full.'
 
-            # RENAME
             if (
                 (m.video and m.video.file_name) or
                 (m.audio and m.audio.file_name) or
@@ -1597,7 +1572,6 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 if generated_thumb and os.path.exists(generated_thumb): os.remove(generated_thumb)
                 await c.delete_messages(d, p.id)
 
-            # --- LARGE FILE HANDLING ---
             if fsize > 2 and Y:
                 st = time.time()
                 await upd_dlg(Y)
@@ -1612,8 +1586,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                         except Exception:
                             pass
 
-                    # Uploading args passed here
-                    upload_args = {'progress': prog, 'progress_args': (c, d, p.id, st, 'Uploading')} # 6s update
+                    upload_args = {'progress': prog, 'progress_args': (c, d, p.id, st, 'Uploading')} 
 
                     if not is_real_video:
                          sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
@@ -1649,8 +1622,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
             st = time.time()
             try:
                 uploaded = False
-                # Uploading args passed here
-                upload_args = {'progress': prog, 'progress_args': (c, d, p.id, st, 'Uploading')} # 6s update
+                upload_args = {'progress': prog, 'progress_args': (c, d, p.id, st, 'Uploading')} 
 
                 if is_real_video and (m.video or (m.document and os.path.splitext(f)[1].lower() in video_extensions)):
                     try:
@@ -1855,7 +1827,7 @@ async def text_handler(c, m):
                     try: await pt.edit(f'{j+1}/{n}: Error - {str(e)[:30]}')
                     except: pass
                 
-                await asyncio.sleep(10)
+                await asyncio.sleep(6) # CHANGED FROM 10 TO 6 AS REQUESTED
             
             if j+1 == n:
                 await m.reply_text(f'Batch Completed ✅ Success: {success}/{n}')
